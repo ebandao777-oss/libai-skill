@@ -39,6 +39,11 @@ class SentenceReport:
     sentence_starter_cnt: int = 0
     rhetorical_cnt: int = 0
     list_marker_cnt: int = 0
+    false_sublimation_cnt: int = 0
+    banned_word_v2_cnt: int = 0
+    new_ai_flavor_cnt: int = 0
+    tier1_breaker_cnt: int = 0
+    gray_zone_cnt: int = 0
 
 
 @dataclass
@@ -66,6 +71,11 @@ class DetectionReport:
     sentence_starter_count: int = 0
     rhetorical_count: int = 0
     list_marker_count: int = 0
+    false_sublimation_count: int = 0
+    banned_word_v2_count: int = 0
+    new_ai_flavor_count: int = 0
+    tier1_breaker_count: int = 0
+    gray_zone_count: int = 0
     em_dash_count: int = 0
     curly_quote_count: int = 0
     exclamation_count: int = 0
@@ -93,6 +103,11 @@ class AIDetector:
         'list_marker': 'list_marker_cnt',
         'rhetorical': 'rhetorical_cnt',
         'sentence_starter': 'sentence_starter_cnt',
+        'false_sublimation': 'false_sublimation_cnt',
+        'banned_word_v2': 'banned_word_v2_cnt',
+        'new_ai_flavor': 'new_ai_flavor_cnt',
+        'tier1_breaker': 'tier1_breaker_cnt',
+        'gray_zone': 'gray_zone_cnt',
     }
     
     # 类别权重
@@ -113,6 +128,11 @@ class AIDetector:
         'list_marker': 1,
         'sentence_starter': 2,
         'rhetorical': 2,
+        'false_sublimation': 3,
+        'banned_word_v2': 2,
+        'new_ai_flavor': 3,
+        'tier1_breaker': 5,
+        'gray_zone': 1,
     }
     
     def __init__(self, rules: Optional[RuleSet] = None, user_rules_path: Optional[str] = None):
@@ -120,6 +140,7 @@ class AIDetector:
             rules = load_rules_with_user(user_rules_path)
         self.rules = rules
         self._compiled_rhetorical_patterns = self._compile_patterns(self.rules.rhetorical_patterns)
+        self._compiled_tier1_patterns = self._compile_tier1_patterns()
         
         # 构建统一正则（会初始化 _word_to_category）
         self._word_to_category = {}
@@ -136,6 +157,22 @@ class AIDetector:
                 continue
         return compiled
     
+    def _compile_tier1_patterns(self) -> List[re.Pattern]:
+        """编译一级熔断正则模式（出现即标记）"""
+        compiled = []
+        tier1 = self.rules.tier1_circuit_breaker
+        if not tier1:
+            return compiled
+        patterns = tier1.get("patterns", [])
+        for item in patterns:
+            pattern_str = item.get("pattern", "")
+            if pattern_str:
+                try:
+                    compiled.append(re.compile(pattern_str, re.IGNORECASE))
+                except re.error:
+                    continue
+        return compiled
+
     def _build_unified_regex(self) -> Optional[re.Pattern]:
         """构建统一正则表达式，一次扫描所有类别
         
@@ -160,7 +197,51 @@ class AIDetector:
             ('filler', self.rules.filler_phrases),
             ('rule_of_three', self.rules.rule_of_three_patterns),
             ('list_marker', self.rules.list_markers),
+            ('false_sublimation', self.rules.false_sublimation),
         ]
+        
+        # Add banned_words_v2 pattern entries
+        banned_v2 = self.rules.banned_words_v2
+        if isinstance(banned_v2, dict):
+            v2_patterns = []
+            for cat_key in ['cat1_机械连接词', 'cat2_悬浮抽象词与互联网黑话',
+                            'cat3_翻译腔与冗长句式', 'cat4_端水大师与假大空升华',
+                            'cat5_伪情感与客服腔']:
+                cat_data = banned_v2.get(cat_key, {})
+                entries = cat_data.get('entries', []) if isinstance(cat_data, dict) else []
+                for entry in entries:
+                    if isinstance(entry, dict):
+                        pat = entry.get('pattern', '')
+                        if pat:
+                            v2_patterns.append(pat)
+            if v2_patterns:
+                categories.append(('banned_word_v2', v2_patterns))
+        
+        # Add new_ai_flavor_2025 pattern manifestations
+        new_ai = self.rules.new_ai_flavor_2025
+        if isinstance(new_ai, dict):
+            naf_patterns = []
+            for p in new_ai.get('patterns', []):
+                if isinstance(p, dict):
+                    mani = p.get('manifestation', '')
+                    if mani:
+                        # Split comma-separated phrases
+                        for phrase in mani.split('、'):
+                            phrase = phrase.strip()
+                            if phrase:
+                                naf_patterns.append(phrase)
+            if naf_patterns:
+                categories.append(('new_ai_flavor', naf_patterns))
+
+        # Add tier3_gray_zone words for tracking (not as hard matches, as context-sensitive)
+        gray_zone = self.rules.tier3_gray_zone
+        if isinstance(gray_zone, dict):
+            gz_words = []
+            for w in gray_zone.get('words', []):
+                if isinstance(w, dict):
+                    gz_words.append(w.get('word', ''))
+            if gz_words:
+                categories.append(('gray_zone', gz_words))
         
         for cat_name, words in categories:
             if not words:
@@ -245,6 +326,11 @@ class AIDetector:
             report.sentence_starter_count += sent_report.sentence_starter_cnt
             report.rhetorical_count += sent_report.rhetorical_cnt
             report.list_marker_count += sent_report.list_marker_cnt
+            report.false_sublimation_count += sent_report.false_sublimation_cnt
+            report.banned_word_v2_count += sent_report.banned_word_v2_cnt
+            report.new_ai_flavor_count += sent_report.new_ai_flavor_cnt
+            report.tier1_breaker_count += sent_report.tier1_breaker_cnt
+            report.gray_zone_count += sent_report.gray_zone_cnt
         
         # 全局特征
         report.em_dash_count = count_em_dashes(text)
@@ -396,6 +482,14 @@ class AIDetector:
                 score += 1
                 sr.rhetorical_cnt += 1
                 reasons.append("rhetorical_pattern")
+                break
+        
+        # 检查一级熔断模式
+        for pat in self._compiled_tier1_patterns:
+            if pat.search(sentence):
+                score += 2
+                sr.tier1_breaker_cnt += 1
+                reasons.append("tier1_circuit_breaker")
                 break
         
         # 检查长句

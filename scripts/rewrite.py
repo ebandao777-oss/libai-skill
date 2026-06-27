@@ -121,8 +121,11 @@ class AIRewriter:
                 resolved.relative_to(resources_dir)
             except ValueError:
                 raise ValueError(
-                    f"Security: synonyms file must be within {resources_dir}. "
-                    f"Rejected path: {synonyms_path}"
+                    "[路径安全限制] 同义词文件必须在 resources/ 目录内。\n"
+                    "→ 被拒绝的路径：{}\n"
+                    "→ 建议：请将自定义同义词文件放入 {} 目录下。".format(
+                        synonyms_path, resources_dir
+                    )
                 )
             if not resolved.exists():
                 raise FileNotFoundError(f"Synonyms file not found: {resolved}")
@@ -131,7 +134,10 @@ class AIRewriter:
                     return json.load(f)
             except json.JSONDecodeError as e:
                 raise json.JSONDecodeError(
-                    f"Invalid JSON in synonyms file {resolved}: {e.msg}",
+                    "[同义词文件格式错误] JSON 解析失败：{}\n"
+                    "→ 建议：请检查同义词文件是否为合法 JSON，位置 {}".format(
+                        resolved, e.pos
+                    ),
                     e.doc, e.pos
                 ) from e
         
@@ -142,7 +148,10 @@ class AIRewriter:
                     return json.load(f)
             except json.JSONDecodeError as e:
                 raise json.JSONDecodeError(
-                    f"Invalid JSON in synonyms file {default_path}: {e.msg}",
+                    "[默认同义词库格式错误] JSON 解析失败：{}\n"
+                    "→ 建议：请检查 resources/synonyms.json 是否为合法 JSON，位置 {}".format(
+                        default_path, e.pos
+                    ),
                     e.doc, e.pos
                 ) from e
         return {}
@@ -236,6 +245,50 @@ class AIRewriter:
         # 步骤5. 同义词替换（文体感知 + 激进模式 / 二阶·换句式）
         if self._synonym_pattern and self.synonyms:
             preset = self.STYLE_PRESETS.get(style, self.STYLE_PRESETS["default"])
+        
+        # Apply rewrite_tier_ops tier guidance (low/medium/high risk tier)
+        tier_ops = self.rules.rewrite_tier_ops
+        if isinstance(tier_ops, dict) and style == "default":
+            # Auto-detect: if text has high-risk patterns, boost intensity
+            high_risk_signal = False
+            medium_risk_signal = False
+            # Simple heuristic: check for tier1 circuit breaker patterns
+            tier1 = self.rules.tier1_circuit_breaker
+            if isinstance(tier1, dict):
+                for p in tier1.get('patterns', []):
+                    if isinstance(p, dict) and p.get('pattern'):
+                        try:
+                            if re.search(p['pattern'], text):
+                                high_risk_signal = True
+                                break
+                        except re.error:
+                            continue
+            # Check for banned_words_v2
+            if not high_risk_signal:
+                banned_v2 = self.rules.banned_words_v2
+                if isinstance(banned_v2, dict):
+                    count = 0
+                    for cat_key in banned_v2:
+                        cat_data = banned_v2[cat_key]
+                        if isinstance(cat_data, dict):
+                            for entry in cat_data.get('entries', []):
+                                if isinstance(entry, dict):
+                                    pat = entry.get('pattern', '')
+                                    if pat and re.search(re.escape(pat), text):
+                                        count += 1
+                    if count >= 6:
+                        high_risk_signal = True
+                    elif count >= 3:
+                        medium_risk_signal = True
+            
+            if high_risk_signal and tier_ops.get('high_risk'):
+                preset = dict(preset)
+                preset['synonym_prob'] = 0.35
+                preset['split_long'] = True
+            elif medium_risk_signal and tier_ops.get('medium_risk'):
+                preset = dict(preset)
+                preset['synonym_prob'] = 0.30
+                preset['split_long'] = True
             prob = 0.4 if aggressive else preset["synonym_prob"]
             text, count = self._replace_synonyms(text, prob)
             if count > 0:
@@ -252,6 +305,50 @@ class AIRewriter:
         # ===== 三阶：调结构（三步排雷法·加泥土 / 破式五层法·破句式+破结构层）=====
         # 步骤7. 长句拆分（文体感知：学术/技术文档不拆分长句 / 破式五层法 L1·破句式）
         preset = self.STYLE_PRESETS.get(style, self.STYLE_PRESETS["default"])
+        
+        # Apply rewrite_tier_ops tier guidance (low/medium/high risk tier)
+        tier_ops = self.rules.rewrite_tier_ops
+        if isinstance(tier_ops, dict) and style == "default":
+            # Auto-detect: if text has high-risk patterns, boost intensity
+            high_risk_signal = False
+            medium_risk_signal = False
+            # Simple heuristic: check for tier1 circuit breaker patterns
+            tier1 = self.rules.tier1_circuit_breaker
+            if isinstance(tier1, dict):
+                for p in tier1.get('patterns', []):
+                    if isinstance(p, dict) and p.get('pattern'):
+                        try:
+                            if re.search(p['pattern'], text):
+                                high_risk_signal = True
+                                break
+                        except re.error:
+                            continue
+            # Check for banned_words_v2
+            if not high_risk_signal:
+                banned_v2 = self.rules.banned_words_v2
+                if isinstance(banned_v2, dict):
+                    count = 0
+                    for cat_key in banned_v2:
+                        cat_data = banned_v2[cat_key]
+                        if isinstance(cat_data, dict):
+                            for entry in cat_data.get('entries', []):
+                                if isinstance(entry, dict):
+                                    pat = entry.get('pattern', '')
+                                    if pat and re.search(re.escape(pat), text):
+                                        count += 1
+                    if count >= 6:
+                        high_risk_signal = True
+                    elif count >= 3:
+                        medium_risk_signal = True
+            
+            if high_risk_signal and tier_ops.get('high_risk'):
+                preset = dict(preset)
+                preset['synonym_prob'] = 0.35
+                preset['split_long'] = True
+            elif medium_risk_signal and tier_ops.get('medium_risk'):
+                preset = dict(preset)
+                preset['synonym_prob'] = 0.30
+                preset['split_long'] = True
         if aggressive or preset["split_long"]:
             text, split_count = self._split_long_sentences(text)
             if split_count > 0:
@@ -550,5 +647,27 @@ class AIRewriter:
         if cfg.get('clean_trailing_clutter', True):
             text = re.sub(r'[。！？]\s*探讨\s*$', '。', text)
             text = re.sub(r'[。！？]\s*交流\s*$', '。', text)
+        
+        # 注入 human_voice_bank 活人感词库（概率性，不破坏原有结构）
+        if cfg.get('inject_human_voice', True):
+            voice_bank = self.rules.human_voice_bank
+            if isinstance(voice_bank, dict):
+                categories = voice_bank.get('categories', {})
+                if isinstance(categories, dict):
+                    all_phrases = []
+                    for cat, phrases in categories.items():
+                        if isinstance(phrases, list):
+                            all_phrases.extend(phrases)
+                    if all_phrases and len(get_sentences(text)) >= 5:
+                        # Inject 1-2 phrases at paragraph start or after sentences
+                        import random as _random
+                        chosen = _random.sample(all_phrases, min(2, len(all_phrases)))
+                        sentences = get_sentences(text)
+                        if len(sentences) >= 4:
+                            # Insert at a random sentence boundary (not first)
+                            idx = _random.randint(1, len(sentences) - 2)
+                            injection = chosen[0]
+                            sentences[idx] = injection + '，' + sentences[idx]
+                            text = ''.join(sentences)
         
         return text.strip()

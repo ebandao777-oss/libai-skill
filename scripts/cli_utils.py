@@ -90,8 +90,26 @@ def read_input(args) -> Tuple[str, Optional[str]]:
         try:
             text = read_file(args.input)
             return text, args.input
-        except FileNotFoundError as e:
-            print(f"Error: {e}", file=sys.stderr)
+        except FileNotFoundError:
+            print(
+                "[文件未找到] 无法读取输入文件：{}。\n"
+                "→ 建议：请检查文件路径是否正确，确认文件存在且未被占用。".format(args.input),
+                file=sys.stderr
+            )
+            sys.exit(1)
+        except PermissionError:
+            print(
+                "[权限不足] 没有读取权限：{}。\n"
+                "→ 建议：请检查文件权限设置，或尝试以管理员身份运行。".format(args.input),
+                file=sys.stderr
+            )
+            sys.exit(1)
+        except UnicodeDecodeError:
+            print(
+                "[编码错误] 文件编码不兼容：{}。\n"
+                "→ 建议：请确认文件为 UTF-8 编码，或将文本粘贴到标准输入。".format(args.input),
+                file=sys.stderr
+            )
             sys.exit(1)
     else:
         text = sys.stdin.read()
@@ -101,5 +119,10 @@ def read_input(args) -> Tuple[str, Optional[str]]:
 def validate_text(text: str) -> None:
     """验证输入文本非空；为空则输出错误并退出。"""
     if not text:
-        print("Error: No input text provided", file=sys.stderr)
+        print(
+            "[输入为空] 没有收到任何文本内容。\n"
+            "→ 建议：请提供待检测/改写的文本，或指定文件路径（如 `python detect.py mytext.txt`），"
+            "也可通过管道输入（`echo 文本 | python detect.py`）。",
+            file=sys.stderr
+        )
         sys.exit(1)

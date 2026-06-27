@@ -3,6 +3,7 @@
 """Command-line interface for AI text rewriting."""
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -43,4 +44,17 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except FileNotFoundError as e:
+        print(f"[文件未找到] {e}\n→ 建议：请检查文件路径是否正确，确认规则文件存在。", file=sys.stderr)
+        sys.exit(2)
+    except json.JSONDecodeError as e:
+        print(f"[规则解析失败] JSON 格式错误：{e.msg}（位置 {e.pos}）\n→ 建议：请检查规则文件是否为合法 JSON，可使用 jsonlint 验证。", file=sys.stderr)
+        sys.exit(3)
+    except MemoryError:
+        print("[内存不足] 输入文本过大，无法一次性处理。\n→ 建议：将文本拆分为多个小文件分批处理。", file=sys.stderr)
+        sys.exit(4)
+    except Exception as e:
+        print(f"[未知错误] {type(e).__name__}: {e}\n→ 建议：请检查输入文本是否有效，或尝试使用 -a 开启激进模式重试。", file=sys.stderr)
+        sys.exit(99)
